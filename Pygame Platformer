@@ -4,7 +4,7 @@ import math
 import random
 
 pygame.init()
-pygame.display.set_caption("Platformer by @Zach")
+pygame.display.set_caption("Platformer by ZacPrater")
 clock = pygame.time.Clock()
 
 WIDTH = 1200
