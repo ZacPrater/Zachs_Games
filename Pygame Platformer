@@ -78,7 +78,7 @@ blocks.append(Sprite(600, 600, 1000, 20))
 blocks.append(Sprite(1000, 500, 100, 200))
 blocks.append(Sprite(200, 500, 100, 200))
 
-
+# Main Game Loop
 while True:
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
