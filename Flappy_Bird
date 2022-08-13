@@ -93,7 +93,6 @@ pipe3_bottom.goto(900, -180)
 pipe3_bottom.dx = -2
 pipe3_bottom.dy = 0
 
-
 gravity = -0.3
 
 def go_up():
