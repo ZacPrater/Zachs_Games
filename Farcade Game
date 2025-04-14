@@ -1,0 +1,667 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+    <title>Space Invaders</title>
+    <script
+      src="https://cdn.jsdelivr.net/npm/@farcade/game-sdk@latest/dist/index.min.js"
+      onerror="loadFallbackSDK()"
+    ></script>
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        height: 100vh;
+        background: #000;
+        overflow: hidden;
+        font-family: Arial, sans-serif;
+        touch-action: none;
+      }
+      canvas {
+        max-width: 500px;
+        max-height: 1000px;
+        width: 100%;
+        height: 100%;
+        display: none;
+      }
+      #start-screen,
+      #game-over {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        text-align: center;
+        color: #fff;
+        display: none;
+      }
+      #start-screen {
+        display: block;
+      }
+      #start-screen h2,
+      #game-over h2 {
+        font-size: 2em;
+        margin-bottom: 20px;
+      }
+      #ready-btn,
+      #restart-btn {
+        padding: 15px 30px;
+        font-size: 1.2em;
+        background: #0f0;
+        border: none;
+        cursor: pointer;
+        border-radius: 5px;
+        min-width: 44px;
+        min-height: 44px;
+      }
+      #ready-btn:hover,
+      #restart-btn:hover {
+        background: #0c0;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="gameCanvas"></canvas>
+    <div id="start-screen">
+      <h2>Space Invaders</h2>
+      <button id="ready-btn">Ready</button>
+    </div>
+    <div id="game-over">
+      <h2>Game Over</h2>
+      <p id="final-score"></p>
+      <button id="restart-btn">Restart</button>
+    </div>
+    <script>
+      // SDK fallback loader
+      function loadFallbackSDK() {
+        console.warn("Primary SDK load failed, trying fallback");
+        const script = document.createElement("script");
+        script.src = "https://unpkg.com/@farcade/game-sdk@0.1.0/dist/index.min.js";
+        script.onerror = () => console.warn("Fallback SDK load failed, using stub");
+        document.body.appendChild(script);
+      }
+
+      // SDK fallback
+      window.FarcadeSDK = window.FarcadeSDK || {
+        singlePlayer: {
+          actions: {
+            ready: () => console.log("SDK ready fallback"),
+            gameOver: (data) => console.log("Game over:", data),
+            hapticFeedback: () => console.log("Haptic feedback fallback"),
+            dispatchEvent: (eventName, payload) => console.log(`Event ${eventName} dispatched:`, payload),
+          },
+        },
+        on: (event, cb) => console.log(`Event ${event} registered`),
+      };
+
+      // Safe SDK call
+      function safeSDKCall(fn, action) {
+        try {
+          if (window.FarcadeSDK && window.FarcadeSDK.singlePlayer && window.FarcadeSDK.singlePlayer.actions) {
+            fn();
+          } else {
+            console.warn(`SDK unavailable for ${action}`);
+          }
+        } catch (e) {
+          console.error(`Farcade SDK ${action} failed:`, e);
+        }
+      }
+
+      // Safe DOM access
+      function getElement(id) {
+        try {
+          return document.getElementById(id);
+        } catch (e) {
+          console.error(`Failed to get element ${id}:`, e);
+          return null;
+        }
+      }
+
+      // Debug appendChild
+      const originalAppendChild = Node.prototype.appendChild;
+      Node.prototype.appendChild = function (node) {
+        if (typeof node === "string") {
+          console.error("appendChild called with string:", node.substring(0, 50), new Error().stack);
+          throw new Error("Invalid appendChild argument");
+        }
+        return originalAppendChild.call(this, node);
+      };
+
+      // Global error handler
+      window.addEventListener("error", (event) => {
+        console.error("Global error:", event.message, event.filename, event.lineno, event.colno, event.error);
+      });
+
+      const canvas = getElement("gameCanvas");
+      const ctx = canvas ? canvas.getContext("2d") : null;
+      let dpr = window.devicePixelRatio || 1;
+
+      // Game state
+      let player, enemies, enemyBullets, playerBullets, barriers, mysteryShip, particles;
+      let score = 0,
+        lives = 3,
+        highScore = localStorage.getItem("highScore") || 0;
+      let gameOver = false,
+        enemyDirection = 1,
+        enemySpeed = 1,
+        lastMysteryShip = 0;
+      let keys = {},
+        touchX = null;
+      let isInitialized = false;
+
+      // Resize canvas
+      function resizeCanvas() {
+        if (!canvas || !ctx) return;
+        try {
+          canvas.width = Math.min(500, window.innerWidth) * dpr;
+          canvas.height = Math.min(1000, window.innerHeight) * dpr;
+          canvas.style.width = `${canvas.width / dpr}px`;
+          canvas.style.height = `${canvas.height / dpr}px`;
+          ctx.scale(dpr, dpr);
+        } catch (e) {
+          console.error("Canvas resize failed:", e);
+        }
+      }
+
+      // Classes
+      class Player {
+        constructor() {
+          this.width = 40;
+          this.height = 20;
+          this.x = canvas ? canvas.width / dpr / 2 - this.width / 2 : 0;
+          this.y = canvas ? canvas.height / dpr - this.height - 50 : 0;
+          this.speed = 5;
+        }
+        draw() {
+          if (!ctx) return;
+          ctx.fillStyle = "#0f0";
+          ctx.beginPath();
+          ctx.moveTo(this.x, this.y + this.height);
+          ctx.lineTo(this.x + this.width / 2, this.y);
+          ctx.lineTo(this.x + this.width, this.y + this.height);
+          ctx.closePath();
+          ctx.fill();
+        }
+        update() {
+          if (gameOver || !canvas) return;
+          if ((keys["ArrowLeft"] || keys["a"]) && this.x > 0) {
+            this.x -= this.speed;
+            console.log("Moving left to x:", this.x);
+          }
+          if ((keys["ArrowRight"] || keys["d"]) && this.x < canvas.width / dpr - this.width) {
+            this.x += this.speed;
+            console.log("Moving right to x:", this.x);
+          }
+          if (touchX !== null) {
+            this.x = Math.max(0, Math.min(touchX - this.width / 2, canvas.width / dpr - this.width));
+            console.log("Touch move to x:", this.x);
+          }
+        }
+        shoot() {
+          if (!gameOver) {
+            playerBullets.push(new Bullet(this.x + this.width / 2 - 2, this.y - 10, -7, true));
+            safeSDKCall(() => window.FarcadeSDK.singlePlayer.actions.hapticFeedback(), "hapticFeedback_shoot");
+            console.log("Shooting bullet from x:", this.x);
+          }
+        }
+      }
+
+      class Enemy {
+        constructor(x, y, type) {
+          this.x = x;
+          this.y = y;
+          this.type = type;
+          this.width = 30;
+          this.height = 20;
+          this.points = type === 1 ? 10 : type === 2 ? 20 : 30;
+        }
+        draw() {
+          if (!ctx) return;
+          ctx.fillStyle = typeColors[this.type - 1];
+          ctx.beginPath();
+          if (this.type === 1) {
+            ctx.arc(this.x + this.width / 2, this.y + this.height / 2, this.width / 2, 0, Math.PI * 2);
+          } else if (this.type === 2) {
+            ctx.rect(this.x, this.y, this.width, this.height);
+          } else {
+            ctx.moveTo(this.x + this.width / 2, this.y);
+            ctx.lineTo(this.x, this.y + this.height);
+            ctx.lineTo(this.x + this.width, this.y + this.height);
+            ctx.closePath();
+          }
+          ctx.fill();
+        }
+      }
+
+      class Bullet {
+        constructor(x, y, dy, isPlayer) {
+          this.x = x;
+          this.y = y;
+          this.width = 4;
+          this.height = 10;
+          this.dy = dy;
+          this.isPlayer = isPlayer;
+        }
+        draw() {
+          if (!ctx) return;
+          ctx.fillStyle = this.isPlayer ? "#ff0" : "#f00";
+          ctx.fillRect(this.x, this.y, this.width, this.height);
+        }
+        update() {
+          this.y += this.dy;
+        }
+      }
+
+      class Barrier {
+        constructor(x, y) {
+          this.x = x;
+          this.y = y;
+          this.width = 50;
+          this.height = 20;
+          this.health = 3;
+        }
+        draw() {
+          if (!ctx) return;
+          ctx.fillStyle = `hsl(120, 50%, ${this.health * 20}%)`;
+          ctx.fillRect(this.x, this.y, this.width, this.height);
+        }
+      }
+
+      class MysteryShip {
+        constructor() {
+          this.width = 40;
+          this.height = 20;
+          this.x = -this.width;
+          this.y = 50;
+          this.speed = 3;
+          this.points = 100;
+        }
+        draw() {
+          if (!ctx) return;
+          ctx.fillStyle = "#f0f";
+          ctx.beginPath();
+          ctx.moveTo(this.x, this.y + this.height);
+          ctx.lineTo(this.x + this.width / 2, this.y);
+          ctx.lineTo(this.x + this.width, this.y + this.height);
+          ctx.closePath();
+          ctx.fill();
+        }
+        update() {
+          this.x += this.speed;
+        }
+      }
+
+      class Particle {
+        constructor(x, y) {
+          this.x = x;
+          this.y = y;
+          this.size = Math.random() * 5 + 2;
+          this.dx = (Math.random() - 0.5) * 5;
+          this.dy = (Math.random() - 0.5) * 5;
+          this.life = 20;
+        }
+        draw() {
+          if (!ctx) return;
+          ctx.fillStyle = `rgba(255, 255, 0, ${this.life / 20})`;
+          ctx.beginPath();
+          ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        update() {
+          this.x += this.dx;
+          this.y += this.dy;
+          this.life--;
+        }
+      }
+
+      // Initialize game
+      const typeColors = ["#f00", "#0ff", "#ff0"];
+      function init() {
+        try {
+          if (!canvas || !ctx) {
+            console.error("Canvas or context not available");
+            return;
+          }
+          player = new Player();
+          enemies = [];
+          enemyBullets = [];
+          playerBullets = [];
+          barriers = [];
+          particles = [];
+          mysteryShip = null;
+          score = 0;
+          lives = 3;
+          gameOver = false;
+          enemyDirection = 1;
+          enemySpeed = 1;
+
+          for (let row = 0; row < 5; row++) {
+            for (let col = 0; col < 6; col++) {
+              let type = row < 2 ? 1 : row < 4 ? 2 : 3;
+              enemies.push(new Enemy(col * 50 + 50, row * 40 + 100, type));
+            }
+          }
+
+          for (let i = 0; i < 4; i++) {
+            barriers.push(new Barrier(i * 100 + 50, canvas.height / dpr - 100));
+          }
+
+          const gameOverDiv = getElement("game-over");
+          if (gameOverDiv) gameOverDiv.style.display = "none";
+
+          isInitialized = true;
+          console.log("Game initialized");
+        } catch (e) {
+          console.error("Init failed:", e);
+        }
+      }
+
+      // Collision detection
+      function collides(a, b) {
+        return a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
+      }
+
+      // Game loop
+      function update() {
+        if (gameOver || !ctx || !canvas) return;
+
+        try {
+          console.log("Update loop: Start");
+          ctx.clearRect(0, 0, canvas.width / dpr, canvas.height / dpr);
+
+          console.log("Update loop: Player");
+          player.update();
+          player.draw();
+
+          console.log("Update loop: Enemies");
+          let minX = Infinity,
+            maxX = -Infinity;
+          enemies.forEach((e) => {
+            minX = Math.min(minX, e.x);
+            maxX = Math.max(maxX, e.x + e.width);
+          });
+          if (minX < 0 || maxX > canvas.width / dpr) {
+            enemyDirection *= -1;
+            enemies.forEach((e) => (e.y += 20));
+          }
+          enemies.forEach((e) => {
+            e.x += enemyDirection * enemySpeed;
+            e.draw();
+            if (Math.random() < 0.001) {
+              enemyBullets.push(new Bullet(e.x + e.width / 2 - 2, e.y + e.height, 5, false));
+            }
+          });
+          enemySpeed = 1 + (30 - enemies.length) * 0.05;
+
+          console.log("Update loop: Player Bullets");
+          playerBullets = playerBullets.filter((b) => b.y > 0);
+          playerBullets.forEach((b) => {
+            b.update();
+            b.draw();
+            enemies.forEach((e, ei) => {
+              if (collides(b, e)) {
+                for (let i = 0; i < 5; i++) particles.push(new Particle(e.x + e.width / 2, e.y + e.height / 2));
+                enemies.splice(ei, 1);
+                playerBullets = playerBullets.filter((pb) => pb !== b);
+                score += e.points;
+                if (score > highScore) {
+                  highScore = score;
+                  try {
+                    localStorage.setItem("highScore", highScore);
+                  } catch (e) {
+                    console.warn("localStorage failed:", e);
+                  }
+                }
+                safeSDKCall(() => window.FarcadeSDK.singlePlayer.actions.hapticFeedback(), "hapticFeedback_enemy_hit");
+              }
+            });
+            if (mysteryShip && collides(b, mysteryShip)) {
+              for (let i = 0; i < 5; i++)
+                particles.push(
+                  new Particle(mysteryShip.x + mysteryShip.width / 2, mysteryShip.y + mysteryShip.height / 2),
+                );
+              score += mysteryShip.points;
+              mysteryShip = null;
+              playerBullets = playerBullets.filter((pb) => pb !== b);
+              safeSDKCall(() => window.FarcadeSDK.singlePlayer.actions.hapticFeedback(), "hapticFeedback_mystery_hit");
+            }
+          });
+
+          console.log("Update loop: Enemy Bullets");
+          enemyBullets = enemyBullets.filter((b) => b.y < canvas.height / dpr);
+          enemyBullets.forEach((b) => {
+            b.update();
+            b.draw();
+            if (collides(b, player)) {
+              lives--;
+              enemyBullets = enemyBullets.filter((eb) => eb !== b);
+              safeSDKCall(() => window.FarcadeSDK.singlePlayer.actions.hapticFeedback(), "hapticFeedback_player_hit");
+              if (lives <= 0) endGame("no_lives");
+            }
+            barriers.forEach((br, bri) => {
+              if (collides(b, br)) {
+                br.health--;
+                enemyBullets = enemyBullets.filter((eb) => eb !== b);
+                if (br.health <= 0) barriers.splice(bri, 1);
+                safeSDKCall(
+                  () => window.FarcadeSDK.singlePlayer.actions.hapticFeedback(),
+                  "hapticFeedback_barrier_hit",
+                );
+              }
+            });
+          });
+
+          console.log("Update loop: Barriers");
+          barriers.forEach((b) => b.draw());
+
+          console.log("Update loop: Mystery Ship");
+          if (!mysteryShip && Date.now() - lastMysteryShip > 15000 && Math.random() < 0.01) {
+            mysteryShip = new MysteryShip();
+            lastMysteryShip = Date.now();
+          }
+          if (mysteryShip) {
+            mysteryShip.update();
+            mysteryShip.draw();
+            if (mysteryShip.x > canvas.width / dpr) mysteryShip = null;
+          }
+
+          console.log("Update loop: Particles");
+          particles = particles.filter((p) => p.life > 0);
+          particles.forEach((p) => {
+            p.update();
+            p.draw();
+          });
+
+          console.log("Update loop: UI");
+          ctx.fillStyle = "#fff";
+          ctx.font = "20px Arial";
+          ctx.fillText(`Score: ${score}`, 10, 30);
+          ctx.fillText(`High: ${highScore}`, 10, 60);
+          for (let i = 0; i < lives; i++) {
+            ctx.fillStyle = "#0f0";
+            ctx.fillRect(canvas.width / dpr - 30 * (i + 1), 10, 20, 10);
+          }
+
+          console.log("Update loop: Game Over Check");
+          if (enemies.length === 0) {
+            safeSDKCall(() => window.FarcadeSDK.singlePlayer.actions.gameOver({ score: score }), "gameOver_wave_clear");
+            init();
+          }
+          enemies.forEach((e) => {
+            if (e.y + e.height > player.y) endGame("enemies_reached");
+          });
+
+          console.log("Update loop: End");
+          requestAnimationFrame(update);
+        } catch (e) {
+          console.error("Update loop error:", e);
+        }
+      }
+
+      function endGame(reason) {
+        try {
+          gameOver = true;
+          const gameOverDiv = getElement("game-over");
+          const finalScore = getElement("final-score");
+          if (gameOverDiv) gameOverDiv.style.display = "block";
+          if (finalScore) finalScore.textContent = `Final Score: ${score}`;
+          if (canvas) canvas.style.display = "block";
+
+          // Dispatch game_over event via SDK
+          safeSDKCall(() => {
+            console.log("Dispatching game_over:", { score, reason, timestamp: Date.now() });
+            window.FarcadeSDK.singlePlayer.actions.dispatchEvent("game_over", {
+              score: score,
+              reason: reason,
+              timestamp: Date.now(),
+            });
+          }, "dispatch_game_over");
+
+          safeSDKCall(() => window.FarcadeSDK.singlePlayer.actions.gameOver({ score: score }), "gameOver");
+          safeSDKCall(() => window.FarcadeSDK.singlePlayer.actions.hapticFeedback(), "hapticFeedback_game_over");
+        } catch (e) {
+          console.error("End game failed:", e);
+        }
+      }
+
+      // Input handling
+      function setupInputs() {
+        try {
+          window.addEventListener("keydown", (e) => {
+            e.preventDefault();
+            keys[e.key] = true;
+            if (e.key === " " && !gameOver) {
+              player.shoot();
+            }
+          });
+          window.addEventListener("keyup", (e) => {
+            e.preventDefault();
+            keys[e.key] = false;
+          });
+
+          canvas.addEventListener("touchstart", (e) => {
+            e.preventDefault();
+            const rect = canvas.getBoundingClientRect();
+            touchX = ((e.touches[0].clientX - rect.left) / rect.width) * (canvas.width / dpr);
+            if (!gameOver) {
+              player.shoot();
+            }
+            console.log("Touch start at x:", touchX);
+          });
+          canvas.addEventListener("touchmove", (e) => {
+            e.preventDefault();
+            const rect = canvas.getBoundingClientRect();
+            touchX = ((e.touches[0].clientX - rect.left) / rect.width) * (canvas.width / dpr);
+            console.log("Touch move to x:", touchX);
+          });
+          canvas.addEventListener("touchend", (e) => {
+            e.preventDefault();
+            touchX = null;
+            console.log("Touch end");
+          });
+
+          const restartBtn = getElement("restart-btn");
+          if (restartBtn) {
+            restartBtn.addEventListener("click", () => {
+              init();
+              update();
+              safeSDKCall(() => {
+                console.log("Dispatching ready on restart:", { timestamp: Date.now() });
+                window.FarcadeSDK.singlePlayer.actions.dispatchEvent("ready", { timestamp: Date.now() });
+              }, "dispatch_ready");
+              safeSDKCall(() => window.FarcadeSDK.singlePlayer.actions.ready(), "ready");
+            });
+          }
+        } catch (e) {
+          console.error("Input setup failed:", e);
+        }
+      }
+
+      // Farcade SDK handlers
+      function setupSDK() {
+        try {
+          window.FarcadeSDK.on("play_again", () => {
+            console.log("Received play_again event");
+            init();
+            update();
+            safeSDKCall(() => {
+              console.log("Dispatching ready on play_again:", { timestamp: Date.now() });
+              window.FarcadeSDK.singlePlayer.actions.dispatchEvent("ready", { timestamp: Date.now() });
+            }, "dispatch_ready");
+            safeSDKCall(() => window.FarcadeSDK.singlePlayer.actions.ready(), "ready");
+          });
+          window.FarcadeSDK.on("toggle_mute", (data) => {
+            console.log("Toggle mute:", data.isMuted);
+            // No audio in game, placeholder for future implementation
+            // setMuted(data.isMuted);
+          });
+        } catch (e) {
+          console.error("SDK setup failed:", e);
+        }
+      }
+
+      // Start screen handler
+      function setupStartScreen() {
+        try {
+          const startScreen = getElement("start-screen");
+          const readyBtn = getElement("ready-btn");
+          if (startScreen && readyBtn) {
+            readyBtn.addEventListener("click", () => {
+              startScreen.style.display = "none";
+              if (canvas) canvas.style.display = "block";
+
+              // Dispatch ready event via SDK
+              safeSDKCall(() => {
+                console.log("Dispatching ready:", { timestamp: Date.now() });
+                window.FarcadeSDK.singlePlayer.actions.dispatchEvent("ready", { timestamp: Date.now() });
+              }, "dispatch_ready");
+
+              startGame();
+            });
+          } else {
+            console.warn("Start screen elements not found, starting game directly");
+            startGame();
+          }
+        } catch (e) {
+          console.error("Start screen setup failed:", e);
+          startGame();
+        }
+      }
+
+      // Start game
+      function startGame() {
+        try {
+          if (!canvas || !ctx) {
+            console.error("Cannot start: Canvas unavailable");
+            return;
+          }
+          console.log("Starting game");
+          window.addEventListener("resize", resizeCanvas);
+          resizeCanvas();
+          init();
+          setupInputs();
+          setupSDK();
+          if (isInitialized) {
+            update();
+            safeSDKCall(() => window.FarcadeSDK.singlePlayer.actions.ready(), "ready");
+          } else {
+            console.error("Initialization failed, retrying...");
+            setTimeout(startGame, 1000);
+          }
+        } catch (e) {
+          console.error("Start game failed:", e);
+        }
+      }
+
+      // Wait for DOM
+      window.addEventListener("load", () => {
+        console.log("DOM loaded, setting up start screen");
+        setupStartScreen();
+      });
+    </script>
+  </body>
+</html>
